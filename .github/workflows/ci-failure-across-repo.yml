@@ -1,0 +1,60 @@
+name: CI Failure Accross Repo
+
+on:
+  repository_dispatch:
+    types: [ci-failed]
+
+env:
+  AWS_REGION: us-east-1
+  AWS_ACCOUNT_ID: 273354635930
+
+jobs:
+  handle-failure:
+    runs-on: ubuntu-latest
+
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::273354635930:role/github-oidc
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Print failure source
+        run: |
+          echo "Failed repository: ${{ github.event.client_payload.repo }}"
+          echo "Run ID: ${{ github.event.client_payload.run_id }}"
+          echo "Workflow: ${{ github.event.client_payload.workflow }}"
+          echo "Branch: ${{ github.event.client_payload.branch }}"
+
+      - name: Print triggering user
+        run: |
+         echo "Triggered by GitHub user: ${{ github.event.client_payload.actor }}"
+
+      - name: Download logs from failed workflow run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.event.client_payload.repo }}
+          RUN_ID: ${{ github.event.client_payload.run_id }}
+        run: |
+          echo "Downloading logs from $REPO (run ID: $RUN_ID)..."
+          curl -L \
+            -H "Authorization: token $GH_TOKEN" \
+            https://api.github.com/repos/$REPO/actions/runs/$RUN_ID/logs \
+            -o logs.zip
+
+      - name: Verify logs.zip is valid
+        run: file logs.zip || echo "Log file not valid"
+
+      - name: Unzip logs
+        run: unzip logs.zip -d logs || echo "No logs to unzip"
+
+      - name: Upload logs to S3
+        run: |
+          aws s3 sync logs s3://${{ secrets.AWS_S3_BUCKET }}/ci-failure-logs/${{ github.event.client_payload.repo }}/${{ github.event.client_payload.actor }}/${{ github.event.client_payload.run_id }} --acl private --follow-symlinks
